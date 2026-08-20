@@ -69,10 +69,21 @@ export class ConnectFourScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.worker.terminate());
     createGpuSolver().then((s) => {
       this.gpuSolver = s;
+      if (s && typeof window !== 'undefined') {
+        const w = window as unknown as Record<string, unknown>;
+        w.__c4bench = async (leaves = 100_000, budget = 4) => {
+          const r = await s.bench(leaves, budget);
+          console.log(
+            `__c4bench(${leaves}, ${budget}) → ${r.leaves.toLocaleString('fr-FR')} feuilles en ${r.ms.toFixed(1)} ms · ${r.leavesPerSec.toLocaleString('fr-FR')} feuilles/s · ${r.usPerLeaf.toFixed(2)} µs/feuille · estNPS ${r.estNps.toLocaleString('fr-FR')}`,
+          );
+          return r;
+        };
+      }
     });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.gpuSolver?.destroy();
       this.gpuSolver = null;
+      if (typeof window !== 'undefined') delete (window as unknown as Record<string, unknown>).__c4bench;
     });
 
     this.staticGraphics = this.add.graphics();
