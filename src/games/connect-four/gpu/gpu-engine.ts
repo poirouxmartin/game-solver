@@ -280,36 +280,32 @@ export const reduceTree = (
   return { values, resolved };
 };
 
-/** Analyse complète : séquence de coups → scores par colonne. */
-export const analyzeRoot = (
-  seq: number[],
-  options: AnalyzeOptions = {},
+/** Une feuille à évaluer (nœud de frontière non terminal, en profondeur max). */
+export interface LeafJob {
+  nodeIndex: number;
+  pos: ConnectFourPosition;
+  budget: number;
+}
+
+/** Évaluation des feuilles par le moteur CPU (référence). */
+export const evaluateLeavesCpu = (jobs: LeafJob[]): Map<number, number> => {
+  const map = new Map<number, number>();
+  for (const j of jobs) map.set(j.nodeIndex, evaluateLeaf(j.pos, j.budget));
+  return map;
+};
+
+/**
+ * Pipeline commun (frontière déjà construite) : réduction DAG des valeurs des
+ * feuilles puis scores par colonne, dans la convention du solveur exact.
+ */
+export const buildAnalysis = (
+  root: ConnectFourPosition,
+  nodes: FrontierNode[],
+  leafValues: Map<number, number>,
+  remaining: number,
+  opts: Required<AnalyzeOptions>,
 ): GpuAnalysis => {
-  const opts: Required<AnalyzeOptions> = {
-    frontierDepth: options.frontierDepth ?? 6,
-    leafDepth: options.leafDepth ?? 4,
-    maxLeaves: options.maxLeaves ?? 100_000,
-  };
-  const root = new ConnectFourPosition();
-  for (const col of seq) root.play(col);
-  const remaining = CELLS - root.nbMoves();
-
-  const t0 = performance.now();
-  const nodes = expandFrontier(root, opts);
   const exact = remaining <= opts.frontierDepth + opts.leafDepth;
-
-  const leafValues = new Map<number, number>();
-  let leafCount = 0;
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    if (node.terminal) continue;
-    if (node.depth >= opts.frontierDepth) {
-      const budget = Math.min(opts.leafDepth, remaining - node.depth);
-      leafValues.set(i, evaluateLeaf(node.pos, budget));
-      leafCount++;
-    }
-  }
-
   const { values, resolved } = reduceTree(nodes, leafValues);
 
   const scores: (number | null)[] = new Array(WIDTH).fill(null);
@@ -330,16 +326,38 @@ export const analyzeRoot = (
     root.unplay(col);
   }
 
-  const ms = performance.now() - t0;
-  const nodesEvaluated = leafCount * Math.pow(WIDTH, opts.leafDepth);
-
   return {
     scores,
     exact,
-    nodes: nodesEvaluated,
+    nodes: leafValues.size * Math.pow(WIDTH, opts.leafDepth),
     effectiveDepth: opts.frontierDepth + opts.leafDepth,
-    leaves: leafCount,
+    leaves: leafValues.size,
   };
+};
+
+/** Analyse complète (CPU) : séquence de coups → scores par colonne. */
+export const analyzeRoot = (
+  seq: number[],
+  options: AnalyzeOptions = {},
+): GpuAnalysis => {
+  const opts: Required<AnalyzeOptions> = {
+    frontierDepth: options.frontierDepth ?? 6,
+    leafDepth: options.leafDepth ?? 4,
+    maxLeaves: options.maxLeaves ?? 100_000,
+  };
+  const root = new ConnectFourPosition();
+  for (const col of seq) root.play(col);
+  const remaining = CELLS - root.nbMoves();
+
+  const nodes = expandFrontier(root, opts);
+  const jobs: LeafJob[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node.terminal || node.depth < opts.frontierDepth) continue;
+    jobs.push({ nodeIndex: i, pos: node.pos, budget: Math.min(opts.leafDepth, remaining - node.depth) });
+  }
+  const leafValues = evaluateLeavesCpu(jobs);
+  return buildAnalysis(root, nodes, leafValues, remaining, opts);
 };
 
 /** Constantes par défaut exportées pour la config du kernel WGSL. */
