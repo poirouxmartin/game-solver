@@ -53,6 +53,14 @@ export class TicTacToeScene extends Phaser.Scene {
     this.marks = this.add.graphics();
     this.drawGrid();
 
+    this.add
+      .text(WIDTH - 12, 14, 'Puissance 4 →', { ...TEXT_STYLE(13, '#94a3b8') })
+      .setOrigin(1, 0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => {
+        window.location.hash = '#/connect-four';
+      });
+
     this.add.text(WIDTH / 2, 30, 'Tic-tac-toe — solveur', {
       ...TEXT_STYLE(26, '#f8fafc'),
       fontStyle: 'bold',

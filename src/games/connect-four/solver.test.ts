@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeWinningPosition, popcount, HEIGHT, WIDTH } from './bitboard';
+import { ConnectFourGame } from './game-controller';
 import { ConnectFourPosition } from './position';
 import { ConnectFourSolver } from './solver';
 
@@ -315,4 +316,59 @@ describe('ConnectFourSolver : résultats connus', () => {
     const solver = new ConnectFourSolver(24);
     expect(solver.solve(new ConnectFourPosition(), true)).toBe(1);
   }, 900000);
+});
+
+describe('ConnectFourGame (contrôleur de partie)', () => {
+  it('détecte la victoire du dernier joueur', () => {
+    const game = new ConnectFourGame(new ConnectFourSolver(24));
+    for (const col of [3, 4, 2, 5, 1, 6, 0]) game.playHuman(col);
+    expect(game.gameOver).toBe(true);
+    expect(game.winner).toBe('red');
+  });
+
+  it('refuse l’analyse avant MIN_ANALYZE_MOVES coups', () => {
+    const game = new ConnectFourGame(new ConnectFourSolver(24));
+    for (const col of [3, 4, 2, 5, 1, 6]) game.pos.play(col);
+    expect(game.analyze()).toBe(false);
+    expect(game.scores).toBeNull();
+  });
+
+  it('solverCol joue le seul coup non perdant (fixture API nulle)', () => {
+    const game = new ConnectFourGame(new ConnectFourSolver(24));
+    for (const col of [6, 2, 4, 3, 4, 6, 1, 6, 3, 1, 1, 1, 6, 0, 6]) game.pos.play(col);
+    expect(game.analyze()).toBe(true);
+    expect(game.scores![3]).toBe(0);
+    expect(game.scores![0]).toBe(-1);
+    expect(game.solverCol()).toBe(3);
+    expect(game.outcome()).toBe('draw');
+  });
+
+  it('détecte une issue gagnante (fixture API gain)', () => {
+    const game = new ConnectFourGame(new ConnectFourSolver(24));
+    for (const col of [3, 4, 3, 4, 2, 5, 2, 5, 1, 6, 1, 6]) game.pos.play(col);
+    expect(game.analyze()).toBe(true);
+    expect(game.outcome()).toBe('win');
+  });
+
+  it('des parties complètes aléatoires se terminent proprement', () => {
+    const solver = new ConnectFourSolver(24);
+    solver.nodeLimit = 20_000;
+    for (let t = 0; t < 30; t++) {
+      const game = new ConnectFourGame(solver);
+      let plies = 0;
+      while (!game.gameOver && plies < 42) {
+        const playable = [0, 1, 2, 3, 4, 5, 6].filter((c) => game.pos.canPlay(c));
+        const col = playable[Math.floor(Math.random() * playable.length)];
+        game.playHuman(col);
+        plies++;
+        if (game.gameOver) break;
+        game.analyze();
+        game.playSolver();
+        plies++;
+      }
+      expect(game.gameOver, `partie ${t}`).toBe(true);
+      expect(plies, `partie ${t}`).toBeLessThanOrEqual(42);
+      expect(['red', 'yellow', null], `partie ${t}`).toContain(game.winner);
+    }
+  }, 60000);
 });
