@@ -3,3 +3,7 @@ dist/
 build/
 *.log
 .DS_Store
+
+# Générés par asc (non utilisés, remplacés par wasm-solver.ts)
+src/games/connect-four/solver-as.js
+src/games/connect-four/solver-as.d.ts

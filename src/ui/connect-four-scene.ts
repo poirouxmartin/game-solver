@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { ConnectFourGame, MIN_ANALYZE_MOVES, type C4Outcome } from '../games/connect-four/game-controller';
 import { ConnectFourSolver } from '../games/connect-four/solver';
+import { SolverPool } from '../games/connect-four/solver.pool';
 import type { AnalyzeResponse } from '../games/connect-four/solver.worker';
 
 const SCREEN_W = 480;
@@ -38,7 +39,7 @@ const outcomeLabel = (o: C4Outcome): string => (o === 'win' ? 'gagne' : o === 'd
 
 export class ConnectFourScene extends Phaser.Scene {
   private readonly c4 = new ConnectFourGame(new ConnectFourSolver(10));
-  private worker!: Worker;
+  private worker!: SolverPool;
   private reqId = 0;
   private heights = [0, 0, 0, 0, 0, 0, 0];
   private busy = false;
@@ -57,7 +58,11 @@ export class ConnectFourScene extends Phaser.Scene {
   private analysisButton!: Phaser.GameObjects.Text;
 
   create(): void {
-    this.worker = new Worker(new URL('../games/connect-four/solver.worker.ts', import.meta.url), { type: 'module' });
+    this.worker = new SolverPool(
+      typeof navigator !== 'undefined' && navigator.hardwareConcurrency
+        ? navigator.hardwareConcurrency
+        : 4,
+    );
     this.worker.onmessage = (e: MessageEvent<AnalyzeResponse>) => this.onWorkerResult(e.data);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.worker.terminate());
 
