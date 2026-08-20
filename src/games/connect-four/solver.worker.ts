@@ -19,8 +19,8 @@ export interface AnalyzeResponse {
   nodes: number;
 }
 
-const TT_LOG_SIZE = 22;
-const NODE_LIMIT = 32_000_000;
+export const TT_LOG_SIZE = 22;
+export const NODE_LIMIT = 40_000_000;
 const WIDTH = 7;
 
 export interface Engine {
