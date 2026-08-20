@@ -3,6 +3,7 @@ import { ConnectFourGame, MIN_ANALYZE_MOVES, type C4Outcome } from '../games/con
 import { ConnectFourSolver } from '../games/connect-four/solver';
 import { SolverPool } from '../games/connect-four/solver.pool';
 import type { AnalyzeResponse } from '../games/connect-four/solver.worker';
+import { createGpuSolver, type GpuSolver } from '../games/connect-four/gpu/gpu-solver';
 
 const SCREEN_W = 480;
 const SCREEN_H = 680;
@@ -40,6 +41,7 @@ const outcomeLabel = (o: C4Outcome): string => (o === 'win' ? 'gagne' : o === 'd
 export class ConnectFourScene extends Phaser.Scene {
   private readonly c4 = new ConnectFourGame(new ConnectFourSolver(10));
   private worker!: SolverPool;
+  private gpuSolver: GpuSolver | null = null;
   private reqId = 0;
   private heights = [0, 0, 0, 0, 0, 0, 0];
   private busy = false;
@@ -65,6 +67,13 @@ export class ConnectFourScene extends Phaser.Scene {
     );
     this.worker.onmessage = (e: MessageEvent<AnalyzeResponse>) => this.onWorkerResult(e.data);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.worker.terminate());
+    createGpuSolver().then((s) => {
+      this.gpuSolver = s;
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.gpuSolver?.destroy();
+      this.gpuSolver = null;
+    });
 
     this.staticGraphics = this.add.graphics();
     this.marks = this.add.graphics();
@@ -90,7 +99,11 @@ export class ConnectFourScene extends Phaser.Scene {
     this.analysisButton = this.makeButton(360, 628, 'Analyse', () => {
       this.analysisOn = !this.analysisOn;
       if (this.analysisOn && !this.c4.gameOver && !this.busy) {
-        this.requestAnalysis();
+        if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES && this.gpuSolver?.isSupported()) {
+          this.requestGpuAnalysis();
+        } else {
+          this.requestAnalysis();
+        }
       }
       this.render();
     });
@@ -162,7 +175,11 @@ export class ConnectFourScene extends Phaser.Scene {
     this.render();
     this.time.delayedCall(60, () => {
       if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) {
-        this.playSolverHeuristic();
+        if (this.analysisOn && this.gpuSolver?.isSupported()) {
+          this.requestGpuAnalysis();
+        } else {
+          this.playSolverHeuristic();
+        }
       } else {
         this.requestAnalysis();
       }
@@ -183,6 +200,47 @@ export class ConnectFourScene extends Phaser.Scene {
     this.analyzeNodes = 0;
     const id = ++this.reqId;
     this.worker.postMessage({ id, seq: this.c4.history });
+  }
+
+  /** Analyse d'ouverture instantanée (étage GPU approximatif, ouvertures < 7 coups). */
+  private async requestGpuAnalysis(): Promise<void> {
+    const solver = this.gpuSolver;
+    if (!solver) {
+      this.playSolverHeuristic();
+      return;
+    }
+    this.pendingAnalysis = true;
+    this.analyzeMs = 0;
+    this.analyzeNodes = 0;
+    const id = ++this.reqId;
+    const t0 = performance.now();
+    try {
+      const res = await solver.analyze(this.c4.history);
+      if (id < this.reqId) return;
+      this.pendingAnalysis = false;
+      this.analyzeMs = performance.now() - t0;
+      this.analyzeNodes = res.nodes;
+      this.c4.scores = res.scores as number[];
+      if (this.busy) {
+        const col = this.c4.playSolver();
+        this.heights[col]++;
+        this.busy = false;
+        if (this.c4.gameOver) {
+          this.render();
+          return;
+        }
+        this.render();
+        if (this.analysisOn) {
+          if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) this.requestGpuAnalysis();
+          else this.requestAnalysis();
+        }
+      } else {
+        this.render();
+      }
+    } catch {
+      this.pendingAnalysis = false;
+      this.playSolverHeuristic();
+    }
   }
 
   private onWorkerResult(data: AnalyzeResponse): void {
@@ -279,14 +337,14 @@ export class ConnectFourScene extends Phaser.Scene {
     }
     this.statusText.setText(status);
 
-    if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) {
-      this.solverText.setText('analyse parfaite à partir de 7 coups joués');
-    } else if (!this.analysisOn) {
-      this.solverText.setText('analyse masquée (bouton Analyse)');
-    } else if (this.c4.scores) {
+    if (this.analysisOn && this.c4.scores) {
       this.solverText.setText(
         `analyse en ${this.analyzeMs.toFixed(0)} ms · ${this.analyzeNodes.toLocaleString('fr-FR')} nœuds · ${outcome ? `position : ${outcomeLabel(outcome)}` : ''}`,
       );
+    } else if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) {
+      this.solverText.setText('analyse parfaite à partir de 7 coups joués');
+    } else if (!this.analysisOn) {
+      this.solverText.setText('analyse masquée (bouton Analyse)');
     } else if (this.pendingAnalysis) {
       this.solverText.setText('analyse en cours…');
     } else {
