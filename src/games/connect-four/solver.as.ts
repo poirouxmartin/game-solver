@@ -50,32 +50,23 @@ let colsScratch = new Uint8Array((DRAW_MOVES + 2) * WIDTH);
 let scosScratch = new Int8Array((DRAW_MOVES + 2) * WIDTH);
 let scores = new Int32Array(WIDTH);
 
-// table de transposition (taille première)
+// table de transposition (index power-of-2 via hash multiplicatif, plus rapide qu'un modulo u64)
+const GOLDEN: u64 = 0x9e3779b97f4a7c15;
 let ttKeys = new Uint32Array(1);
 let ttValues = new Uint8Array(1);
 let ttSize: u32 = 1;
+let ttShift: u32 = 64;
+
+function ttIndex(key: u64): u32 {
+  return <u32>((key * GOLDEN) >> ttShift);
+}
 
 // popcount par table 16 bits
 let POPCOUNT16 = new Uint16Array(65536);
 
-function nextPrime(n: u32): u32 {
-  if (n <= 2) return 2;
-  if (n % 2 == 0) n++;
-  while (true) {
-    let prime = true;
-    for (let d: u32 = 3; d * d <= n; d += 2) {
-      if (n % d == 0) {
-        prime = false;
-        break;
-      }
-    }
-    if (prime) return n;
-    n += 2;
-  }
-}
-
 export function create(logSize: i32): i32 {
-  ttSize = nextPrime(<u32>(1 << logSize));
+  ttSize = <u32>(1 << logSize);
+  ttShift = 64 - <u32>logSize;
   ttKeys = new Uint32Array(<i32>ttSize);
   ttValues = new Uint8Array(<i32>ttSize);
   for (let i: i32 = 1; i < 65536; i++) POPCOUNT16[i] = <u16>(POPCOUNT16[i >> 1] + (i & 1));
@@ -350,13 +341,13 @@ function possibleNonLosingMovesInto(): void {
 // ---------- table de transposition ----------
 
 function ttGet(key: u64): i32 {
-  const i: u32 = <u32>(key % <u64>ttSize);
+  const i: u32 = ttIndex(key);
   const tag: u64 = key & <u64>0x1ffffff;
   return ttKeys[i] == <u32>tag ? <i32>ttValues[i] : 0;
 }
 
 function ttPut(key: u64, value: i32): void {
-  const i: u32 = <u32>(key % <u64>ttSize);
+  const i: u32 = ttIndex(key);
   const tag: u64 = key & <u64>0x1ffffff;
   ttKeys[i] = <u32>tag;
   ttValues[i] = <u8>value;

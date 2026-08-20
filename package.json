@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:wasm": "asc src/games/connect-four/solver.as.ts --outFile src/games/connect-four/solver-as.wasm --optimizeLevel 3 --shrinkLevel 0 --bindings raw && node scripts/gen-wasm-ts.mjs",
+    "build:wasm": "asc src/games/connect-four/solver.as.ts --outFile src/games/connect-four/solver-as.wasm --optimizeLevel 3 --shrinkLevel 0 --bindings raw --noAssert && node scripts/gen-wasm-ts.mjs",
     "build": "npm run build:wasm && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
