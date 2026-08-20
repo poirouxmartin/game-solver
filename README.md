@@ -16,3 +16,18 @@ Solveurs de jeux à information parfaite et somme nulle, prouvés solvables (Pui
 | `src/solvers/` | Algorithmes de résolution génériques |
 | `src/analysis/` | Moteur d'analyse (nature de chaque possibilité) |
 | `src/ui/<game>/` | UI d'un jeu |
+
+## Exécution
+
+- `npm run dev` — serveur de dev, puis ouvrir http://localhost:5173.
+- Navigation par hash : `#/tic-tac-toe` (défaut), `#/connect-four`.
+- `npm run test` — tests Vitest (fixtures connect-four validées contre le solveur en ligne de Pascal Pons).
+- `npm run typecheck` / `npm run build`.
+
+## Tester Puissance 4
+
+- Joueur humain = **Rouge** (premier joueur), solveur = **Jaune**.
+- L'analyse par coup (badges **G** gagne / **N** nulle / **P** perd sur chaque colonne) démarre à partir de 7 coups joués (l'analyse de la position vide coûte ~10 minutes). Le bouton **Analyse** ON/OFF la masque ou la relance.
+- L'analyse tourne dans un **Web Worker** : l'interface reste fluide pendant le calcul (budget 8 M de nœuds par analyse).
+- Avant 7 coups, le solveur joue l'heuristique sûre `possibleNonLosingMoves` + ordre central.
+- Bouton **Nouvelle partie** pour relancer une partie.

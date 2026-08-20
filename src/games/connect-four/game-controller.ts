@@ -17,6 +17,7 @@ const ROWS = 6;
 export class ConnectFourGame {
   readonly pos = new ConnectFourPosition();
   readonly solver: ConnectFourSolver;
+  readonly history: number[] = [];
   scores: number[] | null = null;
   gameOver = false;
   winner: 'red' | 'yellow' | null = null;
@@ -29,6 +30,7 @@ export class ConnectFourGame {
 
   reset(): void {
     this.pos.reset();
+    this.history.length = 0;
     this.scores = null;
     this.gameOver = false;
     this.winner = null;
@@ -48,15 +50,19 @@ export class ConnectFourGame {
   /** Coup du joueur humain (Rouge). */
   playHuman(col: number): void {
     this.pos.play(col);
+    this.history.push(col);
     this.scores = null;
     this.finishIfGameOver();
   }
 
-  /** Coup du solveur (Jaune). */
-  playSolver(): void {
-    this.pos.play(this.solverCol());
+  /** Coup du solveur (Jaune). Renvoie la colonne jouée. */
+  playSolver(): number {
+    const col = this.solverCol();
+    this.pos.play(col);
+    this.history.push(col);
     this.scores = null;
     this.finishIfGameOver();
+    return col;
   }
 
   /** Analyse par colonne (weak) du point de vue du joueur au trait. Faux si indisponible. */

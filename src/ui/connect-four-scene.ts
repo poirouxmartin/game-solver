@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { ConnectFourGame, MIN_ANALYZE_MOVES, type C4Outcome } from '../games/connect-four/game-controller';
 import { ConnectFourSolver } from '../games/connect-four/solver';
+import type { AnalyzeResponse } from '../games/connect-four/solver.worker';
 
 const SCREEN_W = 480;
 const SCREEN_H = 680;
@@ -36,10 +37,13 @@ const slotXY = (col: number, row: number): { x: number; y: number } => ({
 const outcomeLabel = (o: C4Outcome): string => (o === 'win' ? 'gagne' : o === 'draw' ? 'nulle' : 'perd');
 
 export class ConnectFourScene extends Phaser.Scene {
-  private readonly c4 = new ConnectFourGame(new ConnectFourSolver(24));
+  private readonly c4 = new ConnectFourGame(new ConnectFourSolver(10));
+  private worker!: Worker;
+  private reqId = 0;
   private heights = [0, 0, 0, 0, 0, 0, 0];
   private busy = false;
   private analysisOn = true;
+  private pendingAnalysis = false;
   private analyzeMs = 0;
   private analyzeNodes = 0;
   private hoverCol = -1;
@@ -53,7 +57,10 @@ export class ConnectFourScene extends Phaser.Scene {
   private analysisButton!: Phaser.GameObjects.Text;
 
   create(): void {
-    this.c4.solver.nodeLimit = 30_000_000;
+    this.worker = new Worker(new URL('../games/connect-four/solver.worker.ts', import.meta.url), { type: 'module' });
+    this.worker.onmessage = (e: MessageEvent<AnalyzeResponse>) => this.onWorkerResult(e.data);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.worker.terminate());
+
     this.staticGraphics = this.add.graphics();
     this.marks = this.add.graphics();
     this.hoverGraphics = this.add.graphics();
@@ -77,9 +84,8 @@ export class ConnectFourScene extends Phaser.Scene {
 
     this.analysisButton = this.makeButton(360, 628, 'Analyse', () => {
       this.analysisOn = !this.analysisOn;
-      if (this.analysisOn && !this.c4.gameOver) {
-        this.c4.analyze();
-        this.trackAnalysis();
+      if (this.analysisOn && !this.c4.gameOver && !this.busy) {
+        this.requestAnalysis();
       }
       this.render();
     });
@@ -96,9 +102,11 @@ export class ConnectFourScene extends Phaser.Scene {
   }
 
   private newGame(): void {
+    this.reqId++;
     this.c4.reset();
     this.heights = [0, 0, 0, 0, 0, 0, 0];
     this.busy = false;
+    this.pendingAnalysis = false;
     this.hoverCol = -1;
     this.render();
   }
@@ -147,26 +155,50 @@ export class ConnectFourScene extends Phaser.Scene {
     }
     this.busy = true;
     this.render();
-    this.time.delayedCall(60, () => this.solveStep());
+    this.time.delayedCall(60, () => {
+      if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) {
+        this.playSolverHeuristic();
+      } else {
+        this.requestAnalysis();
+      }
+    });
   }
 
-  private solveStep(): void {
-    this.c4.analyze();
-    this.c4.playSolver();
+  private playSolverHeuristic(): void {
+    const col = this.c4.playSolver();
+    this.heights[col]++;
     this.busy = false;
-    if (this.analysisOn && !this.c4.gameOver) {
-      this.c4.analyze();
-      this.trackAnalysis();
-    }
     this.render();
+    if (this.analysisOn && !this.c4.gameOver) this.requestAnalysis();
   }
 
-  private trackAnalysis(): void {
+  private requestAnalysis(): void {
+    this.pendingAnalysis = true;
     this.analyzeMs = 0;
     this.analyzeNodes = 0;
-    if (!this.c4.scores) return;
-    this.analyzeMs = this.c4.lastAnalyzeMs;
-    this.analyzeNodes = this.c4.lastAnalyzeNodes;
+    const id = ++this.reqId;
+    this.worker.postMessage({ id, seq: this.c4.history });
+  }
+
+  private onWorkerResult(data: AnalyzeResponse): void {
+    if (data.id < this.reqId) return;
+    this.pendingAnalysis = false;
+    this.analyzeMs = data.ms;
+    this.analyzeNodes = data.nodes;
+    this.c4.scores = data.scores;
+    if (this.busy) {
+      const col = this.c4.playSolver();
+      this.heights[col]++;
+      this.busy = false;
+      if (this.c4.gameOver) {
+        this.render();
+        return;
+      }
+      this.render();
+      if (this.analysisOn) this.requestAnalysis();
+    } else {
+      this.render();
+    }
   }
 
   private onPointerMove(p: Phaser.Input.Pointer): void {
@@ -250,6 +282,8 @@ export class ConnectFourScene extends Phaser.Scene {
       this.solverText.setText(
         `analyse en ${this.analyzeMs.toFixed(0)} ms · ${this.analyzeNodes.toLocaleString('fr-FR')} nœuds · ${outcome ? `position : ${outcomeLabel(outcome)}` : ''}`,
       );
+    } else if (this.pendingAnalysis) {
+      this.solverText.setText('analyse en cours…');
     } else {
       this.solverText.setText('analyse indisponible');
     }
