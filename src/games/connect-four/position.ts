@@ -73,6 +73,16 @@ export class ConnectFourPosition {
     this.height = s.height.slice();
   }
 
+  /** Copie en place (sans allocation) depuis une autre position. */
+  copyFrom(p: ConnectFourPosition): void {
+    this.currentLo = p.currentLo;
+    this.currentHi = p.currentHi;
+    this.maskLo = p.maskLo;
+    this.maskHi = p.maskHi;
+    this.moves = p.moves;
+    for (let i = 0; i < WIDTH; i++) this.height[i] = p.height[i];
+  }
+
   nbMoves(): number {
     return this.moves;
   }

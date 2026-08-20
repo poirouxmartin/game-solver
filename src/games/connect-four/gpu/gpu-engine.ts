@@ -63,9 +63,8 @@ interface FrontierNode {
 
 /** Copie indépendante d'une position. */
 const clonePos = (p: ConnectFourPosition): ConnectFourPosition => {
-  const s = p.snapshot();
   const c = new ConnectFourPosition();
-  c.restore(s);
+  c.copyFrom(p);
   return c;
 };
 
@@ -76,30 +75,27 @@ export const canonicalKey = (pos: ConnectFourPosition): number => {
   return k < r ? k : r;
 };
 
+/** Miroir horizontal du bitboard (colonnes 0..6 → 6..0) par blocs de 6 bits. */
+const mirrorBits = (lo: number, hi: number): { lo: number; hi: number } => {
+  const v2 = (lo >>> 14) & 0x3f;
+  const v4 = ((lo >>> 28) & 0xf) | ((hi & 0x3) << 4);
+  const rlo =
+    ((hi >>> 10) & 0x3f) |
+    (((hi >>> 3) & 0x3f) << 7) |
+    (v4 << 14) |
+    (((lo >>> 21) & 0x3f) << 21) |
+    ((v2 & 0xf) << 28);
+  const rhi = ((v2 >> 4) & 0x3) | (((lo >>> 7) & 0x3f) << 3) | ((lo & 0x3f) << 10);
+  return { lo: rlo >>> 0, hi: rhi };
+};
+
 /** Clé de la position miroir : current et mask réfléchis, même convention 49 bits. */
 const reflectKey = (pos: ConnectFourPosition): number => {
-  const mirror = (srcLo: number, srcHi: number): { lo: number; hi: number } => {
-    let lo = 0;
-    let hi = 0;
-    for (let c = 0; c < WIDTH; c++) {
-      const rc = WIDTH - 1 - c;
-      const cell = c * (HEIGHT + 1);
-      const rcell = rc * (HEIGHT + 1);
-      for (let r = 0; r < HEIGHT; r++) {
-        const src = cell + r;
-        const dst = rcell + r;
-        const bit = src < 32 ? (srcLo >>> src) & 1 : (srcHi >>> (src - 32)) & 1;
-        if (bit === 0) continue;
-        if (dst < 32) lo |= 1 << dst;
-        else hi |= 1 << (dst - 32);
-      }
-    }
-    return { lo: lo >>> 0, hi };
-  };
-  const m = mirror(pos.maskLo, pos.maskHi);
-  const c = mirror(pos.currentLo, pos.currentHi);
-  const kLo = (c.lo + m.lo) >>> 0;
-  const kHi = (c.hi + m.hi + (c.lo + m.lo > 0xffffffff ? 1 : 0)) & 0x1ffff;
+  const m = mirrorBits(pos.maskLo, pos.maskHi);
+  const c = mirrorBits(pos.currentLo, pos.currentHi);
+  const sumLo = c.lo + m.lo;
+  const kLo = sumLo >>> 0;
+  const kHi = (c.hi + m.hi + (sumLo > 0xffffffff ? 1 : 0)) & 0x1ffff;
   return kHi * 4294967296 + kLo;
 };
 
@@ -200,7 +196,7 @@ const colMaskHi = (col: number): number => {
   return hi;
 };
 
-const negamaxLike = (pos: ConnectFourPosition, depth: number): number => {
+const negamaxLike = (pos: ConnectFourPosition, depth: number, alpha = -Infinity, beta = Infinity): number => {
   pos.possibleNonLosingMovesInto();
   const possibleLo = pos.lo;
   const possibleHi = pos.hi;
@@ -212,9 +208,11 @@ const negamaxLike = (pos: ConnectFourPosition, depth: number): number => {
     if (!pos.canPlay(col)) continue;
     if (!pos.isInMask(col, possibleLo, possibleHi)) continue;
     pos.play(col);
-    const v = -negamaxLike(pos, depth - 1);
+    const v = -negamaxLike(pos, depth - 1, -beta, -alpha);
     pos.unplay(col);
     if (v > best) best = v;
+    if (v > alpha) alpha = v;
+    if (alpha >= beta) break;
   }
   return best === -Infinity ? heuristic(pos) : best;
 };
@@ -321,7 +319,7 @@ export const buildAnalysis = (
     if (childIdx > 0 && resolved[childIdx]) {
       scores[col] = -values[childIdx];
     } else {
-      scores[col] = -evaluateLeaf(root, remaining - 1);
+      scores[col] = -evaluateLeaf(root, Math.min(opts.leafDepth, remaining - 1));
     }
     root.unplay(col);
   }
