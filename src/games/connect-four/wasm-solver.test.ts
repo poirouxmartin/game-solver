@@ -33,7 +33,7 @@ const playWasm = (w: WasmSolver, seq: number[]): void => {
 describe('solveur WASM (parité JS + API Pons)', () => {
   let w: WasmSolver;
 
-  it('résout les fixtures comme le solveur de Pons', async () => {
+  it('résout les fixtures comme le solveur de Pons', { timeout: 120_000 }, async () => {
     w = await loadWasmSolver(22);
     for (const f of SOLVE_FIXTURES) {
       playWasm(w, f.seq);

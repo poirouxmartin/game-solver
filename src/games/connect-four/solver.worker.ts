@@ -20,86 +20,90 @@ export interface AnalyzeResponse {
 }
 
 const TT_LOG_SIZE = 22;
-const NODE_LIMIT = 8_000_000;
+const NODE_LIMIT = 32_000_000;
 const WIDTH = 7;
 
-interface Engine {
+export interface Engine {
   analyzeCols(seq: number[], cols: number[]): { scores: number[] | null; nodes: number };
 }
 
-class JsEngine implements Engine {
-  private readonly solver = new ConnectFourSolver(TT_LOG_SIZE);
+export class JsEngine implements Engine {
+  private readonly solver: ConnectFourSolver;
 
-  constructor() {
-    this.solver.nodeLimit = NODE_LIMIT;
+  constructor(nodeLimit = NODE_LIMIT) {
+    this.solver = new ConnectFourSolver(TT_LOG_SIZE);
+    this.solver.nodeLimit = nodeLimit;
   }
 
   analyzeCols(seq: number[], cols: number[]): { scores: number[] | null; nodes: number } {
     const pos = new ConnectFourPosition();
     for (const col of seq) pos.play(col);
-    const nodesBefore = this.solver.nodeCount;
+
+    this.solver.nodeCount = 0;
     try {
       const all = this.solver.analyze(pos, true);
       const scores = cols.map((col) => all[col]);
-      return { scores, nodes: this.solver.nodeCount - nodesBefore };
+      return { scores, nodes: this.solver.nodeCount };
     } catch (err) {
       if (err !== SOLVE_STOP) throw err;
-      return { scores: null, nodes: this.solver.nodeCount - nodesBefore };
+      return { scores: null, nodes: this.solver.nodeCount };
     }
   }
 }
 
-class WasmEngine implements Engine {
+export class WasmEngine implements Engine {
   private readonly solver: WasmSolver;
 
-  constructor(solver: WasmSolver) {
+  constructor(solver: WasmSolver, nodeLimit = NODE_LIMIT) {
     this.solver = solver;
-    this.solver.setNodeLimit(NODE_LIMIT);
+    this.solver.setNodeLimit(nodeLimit);
   }
 
   analyzeCols(seq: number[], cols: number[]): { scores: number[] | null; nodes: number } {
-    const nodesBefore = this.solver.getNodeCount();
     this.solver.reset();
     for (const col of seq) this.solver.play(col);
     const scores: number[] = [];
     for (const col of cols) {
       const ok = this.solver.analyzeCol(col, true);
-      if (ok === WASM_STOP) return { scores: null, nodes: this.solver.getNodeCount() - nodesBefore };
+      if (ok === WASM_STOP) return { scores: null, nodes: this.solver.getNodeCount() };
       scores.push(this.solver.scoreAt(col));
     }
-    return { scores, nodes: this.solver.getNodeCount() - nodesBefore };
+    return { scores, nodes: this.solver.getNodeCount() };
   }
 }
 
-async function createEngine(): Promise<Engine> {
+export async function createEngine(nodeLimit = NODE_LIMIT): Promise<Engine> {
   try {
-    return new WasmEngine(await loadWasmSolver(TT_LOG_SIZE));
+    return new WasmEngine(await loadWasmSolver(TT_LOG_SIZE), nodeLimit);
   } catch (err) {
     console.warn('Solveur WASM indisponible, repli JS :', err);
-    return new JsEngine();
+    return new JsEngine(nodeLimit);
   }
 }
 
 const enginePromise = createEngine();
 
-const ctx = self as unknown as Worker;
+// Hors worker (tests Node), `self` est indéfini : on n'installe le message handler que dans le worker.
+const ctx = typeof self !== 'undefined' ? (self as unknown as Worker) : null;
 
-ctx.onmessage = async (e: MessageEvent<AnalyzeRequest>) => {
-  const { id, seq, cols } = e.data;
-  const engine = await enginePromise;
-  const pos = new ConnectFourPosition();
-  for (const col of seq) pos.play(col);
-  let scores: number[] | null = null;
-  let ms = 0;
-  let nodes = 0;
-  let wanted: number[] = [];
-  if (pos.nbMoves() >= MIN_ANALYZE_MOVES) {
-    wanted = cols ?? Array.from({ length: WIDTH }, (_, col) => col);
-    const t0 = performance.now();
-    const result = engine.analyzeCols(seq, wanted);
-    ms = performance.now() - t0;
-    scores = result.scores;
-    nodes = result.nodes;
-  }
-  ctx.postMessage({ id, cols: wanted, scores, ms, nodes } satisfies AnalyzeResponse);
-};
+if (ctx) {
+  ctx.onmessage = async (e: MessageEvent<AnalyzeRequest>) => {
+    const { id, seq, cols } = e.data;
+    const engine = await enginePromise;
+    const pos = new ConnectFourPosition();
+    for (const col of seq) pos.play(col);
+    let scores: number[] | null = null;
+    let ms = 0;
+    let nodes = 0;
+    let wanted: number[] = [];
+    if (pos.nbMoves() >= MIN_ANALYZE_MOVES) {
+      wanted = cols ?? Array.from({ length: WIDTH }, (_, col) => col);
+      const t0 = performance.now();
+      const result = engine.analyzeCols(seq, wanted);
+      ms = performance.now() - t0;
+      scores = result.scores;
+      nodes = result.nodes;
+    }
+    ctx.postMessage({ id, cols: wanted, scores, ms, nodes } satisfies AnalyzeResponse);
+  };
+}
