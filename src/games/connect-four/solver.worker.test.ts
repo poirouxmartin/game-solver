@@ -11,19 +11,19 @@ const COLS = [0, 1, 2, 3, 4, 5, 6];
 
 describe('budget de nœuds des moteurs (réinitialisé par requête, pas cumulatif)', () => {
   it('JsEngine : deux analyses de positions différentes sous le même budget', () => {
-    const engine = new JsEngine(300_000);
+    const engine = new JsEngine(500_000);
     const r1 = engine.analyzeCols(D18, COLS);
     const r2 = engine.analyzeCols(D15, COLS);
     expect(r1.scores).not.toBeNull();
-    // Sans réinitialisation, le budget serait cumulé (≈397k > 300k) → la 2e analyse renverrait null.
+    // Sans réinitialisation, le budget serait cumulé (> 500k) → la 2e analyse renverrait null.
     expect(r2.scores).not.toBeNull();
     expect(r1.nodes).toBeGreaterThan(0);
     expect(r2.nodes).toBeGreaterThan(0);
   });
 
   it('WasmEngine : deux analyses de positions différentes sous le même budget', async () => {
-    const solver = await loadWasmSolver(22);
-    const engine = new WasmEngine(solver, 280_000);
+    const solver = await loadWasmSolver(TT_LOG_SIZE);
+    const engine = new WasmEngine(solver, 450_000);
     const r1 = engine.analyzeCols(D18, COLS);
     const r2 = engine.analyzeCols(D15, COLS);
     expect(r1.scores).not.toBeNull();

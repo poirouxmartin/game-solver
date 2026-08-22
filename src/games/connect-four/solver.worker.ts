@@ -29,6 +29,9 @@ export interface AnalyzeResponse {
   part?: number;
 }
 
+// Mesure (colonne 6 de [3,4,2,5], position la plus dure connue) : les TT plus
+// petites sont ~10 % plus rapides (sondes dans le L3) mais gonflent les nœuds
+// : logSize 20-21 dépassent NODE_LIMIT=40M (troncature) là où 22 finit à 32,5M.
 export const TT_LOG_SIZE = 22;
 export const NODE_LIMIT = 40_000_000;
 const WIDTH = 7;
