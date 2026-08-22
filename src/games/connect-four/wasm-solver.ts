@@ -19,6 +19,9 @@ export interface WasmSolver {
   analyze(weak: boolean): number;
   analyzeCol(col: number, weak: boolean): number;
   scoreAt(col: number): number;
+  /** Étage évaluation de feuilles (kernel CPU rapide) : positionne puis évalue. */
+  setLeafPosition(cLo: number, cHi: number, mLo: number, mHi: number, moves: number): void;
+  leafEval(budget: number): number;
 }
 
 /** Charge et initialise le solveur WASM (octets embarqués dans le bundle). */
@@ -52,6 +55,9 @@ export async function instantiateWasm(bytes: ArrayBuffer, logSize = 22): Promise
     analyze: (weak) => asm('analyze')(weak ? 1 : 0),
     analyzeCol: (col, weak) => asm('analyzeCol')(col, weak ? 1 : 0),
     scoreAt: (col) => asm('scoreAt')(col),
+    setLeafPosition: (cLo, cHi, mLo, mHi, mv) =>
+      asm('setLeafPosition')(cLo | 0, cHi | 0, mLo | 0, mHi | 0, mv),
+    leafEval: (budget) => asm('leafEval')(budget),
   };
   solver.create(logSize);
   return solver;

@@ -505,3 +505,85 @@ export function analyzeCol(col: i32, weak: i32): i32 {
   scores[col] = -r;
   return 0;
 }
+
+// ---------- évaluation de feuilles (portage rapide de gpu-engine.ts) ----------
+
+const LEAF_WIN: i32 = 1000;
+const LEAF_INF: i32 = 1 << 20;
+
+/** Heuristique de feuille — mêmes valeurs que heuristic() de gpu-engine.ts. */
+function leafHeuristic(): i32 {
+  possibleInto();
+  const plo: u32 = lo;
+  const phi: u32 = hi;
+  computeWinningPositionInto(currentLo, currentHi, maskLo, maskHi);
+  const wlo: u32 = lo;
+  const whi: u32 = hi;
+  if ((wlo & plo) != 0 || (whi & phi) != 0) return LEAF_WIN;
+  possibleNonLosingMovesInto();
+  if (lo == 0 && hi == 0) return -LEAF_WIN;
+  computeWinningPositionInto(currentLo ^ maskLo, currentHi ^ maskHi, maskLo, maskHi);
+  const owl: u32 = lo;
+  const owh: u32 = hi;
+  let threats: i32 = 0;
+  let oppThreats: i32 = 0;
+  for (let col: i32 = 0; col < WIDTH; col++) {
+    if (canPlay(col) == 0) continue;
+    const cml: u32 = colMaskLo[col];
+    const cmh: u32 = colMaskHi[col];
+    if ((owl & plo & cml) != 0 || (owh & phi & cmh) != 0) oppThreats++;
+    if ((wlo & plo & cml) != 0 || (whi & phi & cmh) != 0) threats++;
+  }
+  return threats - oppThreats;
+}
+
+/** Négamax alpha-beta + PVS borné — mêmes valeurs que negamaxLike(). */
+function leafNegamax(depthLeft: i32, alphaIn: i32, betaIn: i32): i32 {
+  possibleNonLosingMovesInto();
+  const pLo: u32 = lo;
+  const pHi: u32 = hi;
+  if (pLo == 0 && pHi == 0) return -((CELLS - moves) / 2);
+  if (moves >= DRAW_MOVES) return 0;
+  if (depthLeft <= 0) return leafHeuristic();
+  let alpha: i32 = alphaIn;
+  const beta: i32 = betaIn;
+  let best: i32 = -LEAF_INF;
+  let first: i32 = 1;
+  for (let i: i32 = 0; i < WIDTH; i++) {
+    const col: i32 = COLUMN_ORDER[i];
+    if (canPlay(col) == 0) continue;
+    if (isInMask(col, pLo, pHi) == 0) continue;
+    play(col);
+    let v: i32;
+    if (first != 0) {
+      v = -leafNegamax(depthLeft - 1, -beta, -alpha);
+      first = 0;
+    } else {
+      v = -leafNegamax(depthLeft - 1, -alpha - 1, -alpha);
+      if (v > alpha && v < beta) v = -leafNegamax(depthLeft - 1, -beta, -v);
+    }
+    unplay(col);
+    if (v > best) best = v;
+    if (v > alpha) alpha = v;
+    if (alpha >= beta) break;
+  }
+  return best == -LEAF_INF ? leafHeuristic() : best;
+}
+
+/** Positionne la position courante depuis les bitboards (hauteurs recalculées). */
+export function setLeafPosition(cLo: u32, cHi: u32, mLo: u32, mHi: u32, mv: i32): void {
+  currentLo = cLo;
+  currentHi = cHi;
+  maskLo = mLo;
+  maskHi = mHi;
+  moves = mv;
+  for (let c: i32 = 0; c < WIDTH; c++) {
+    height[c] = <u8>popcount(mLo & colMaskLo[c], mHi & colMaskHi[c]);
+  }
+}
+
+/** Évalue la position courante : mêmes valeurs que evaluateLeaf(). */
+export function leafEval(budget: i32): i32 {
+  if (canWinNext() != 0) return LEAF_WIN;
+  return leafNegamax(budget, -LEAF_INF, LEAF_INF);
+}

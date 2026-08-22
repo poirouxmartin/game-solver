@@ -4,6 +4,7 @@ import { ConnectFourSolver } from '../games/connect-four/solver';
 import { SolverPool } from '../games/connect-four/solver.pool';
 import type { AnalyzeResponse } from '../games/connect-four/solver.worker';
 import { createGpuSolver, type GpuSolver } from '../games/connect-four/gpu/gpu-solver';
+import { analyzeRootFast, type GpuAnalysis } from '../games/connect-four/gpu/gpu-engine';
 
 const SCREEN_W = 480;
 const SCREEN_H = 680;
@@ -110,11 +111,8 @@ export class ConnectFourScene extends Phaser.Scene {
     this.analysisButton = this.makeButton(360, 628, 'Analyse', () => {
       this.analysisOn = !this.analysisOn;
       if (this.analysisOn && !this.c4.gameOver && !this.busy) {
-        if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES && this.gpuSolver?.isSupported()) {
-          this.requestGpuAnalysis();
-        } else {
-          this.requestAnalysis();
-        }
+        if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) this.requestOpeningAnalysis();
+        else this.requestAnalysis();
       }
       this.render();
     });
@@ -186,11 +184,8 @@ export class ConnectFourScene extends Phaser.Scene {
     this.render();
     this.time.delayedCall(60, () => {
       if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) {
-        if (this.analysisOn && this.gpuSolver?.isSupported()) {
-          this.requestGpuAnalysis();
-        } else {
-          this.playSolverHeuristic();
-        }
+        if (this.analysisOn) this.requestOpeningAnalysis();
+        else this.playSolverHeuristic();
       } else {
         this.requestAnalysis();
       }
@@ -205,6 +200,53 @@ export class ConnectFourScene extends Phaser.Scene {
     if (this.analysisOn && !this.c4.gameOver) this.requestAnalysis();
   }
 
+  /** Analyse d'ouverture (< 7 coups) : étage GPU si dispo, sinon CPU/WASM approximatif. */
+  private requestOpeningAnalysis(): void {
+    if (this.gpuSolver?.isSupported()) this.requestGpuAnalysis();
+    else this.requestCpuAnalysis();
+  }
+
+  /** Suite commune après une analyse approchée (GPU ou CPU) : coup + ré-analyse. */
+  private applyApproxAnalysis(res: GpuAnalysis, ms: number, id: number): void {
+    if (id < this.reqId) return;
+    this.pendingAnalysis = false;
+    this.analyzeMs = ms;
+    this.analyzeNodes = res.nodes;
+    this.c4.scores = res.scores as number[];
+    if (this.busy) {
+      const col = this.c4.playSolver();
+      this.heights[col]++;
+      this.busy = false;
+      if (this.c4.gameOver) {
+        this.render();
+        return;
+      }
+      this.render();
+      if (this.analysisOn) {
+        if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) this.requestOpeningAnalysis();
+        else this.requestAnalysis();
+      }
+    } else {
+      this.render();
+    }
+  }
+
+  /** Analyse d'ouverture instantanée via le CPU (feuilles WASM, repli JS). */
+  private async requestCpuAnalysis(): Promise<void> {
+    this.pendingAnalysis = true;
+    this.analyzeMs = 0;
+    this.analyzeNodes = 0;
+    const id = ++this.reqId;
+    const t0 = performance.now();
+    try {
+      const res = await analyzeRootFast(this.c4.history);
+      this.applyApproxAnalysis(res, performance.now() - t0, id);
+    } catch {
+      this.pendingAnalysis = false;
+      this.playSolverHeuristic();
+    }
+  }
+
   private requestAnalysis(): void {
     this.pendingAnalysis = true;
     this.analyzeMs = 0;
@@ -217,7 +259,7 @@ export class ConnectFourScene extends Phaser.Scene {
   private async requestGpuAnalysis(): Promise<void> {
     const solver = this.gpuSolver;
     if (!solver) {
-      this.playSolverHeuristic();
+      this.requestCpuAnalysis();
       return;
     }
     this.pendingAnalysis = true;
@@ -227,30 +269,10 @@ export class ConnectFourScene extends Phaser.Scene {
     const t0 = performance.now();
     try {
       const res = await solver.analyze(this.c4.history);
-      if (id < this.reqId) return;
-      this.pendingAnalysis = false;
-      this.analyzeMs = performance.now() - t0;
-      this.analyzeNodes = res.nodes;
-      this.c4.scores = res.scores as number[];
-      if (this.busy) {
-        const col = this.c4.playSolver();
-        this.heights[col]++;
-        this.busy = false;
-        if (this.c4.gameOver) {
-          this.render();
-          return;
-        }
-        this.render();
-        if (this.analysisOn) {
-          if (this.c4.pos.nbMoves() < MIN_ANALYZE_MOVES) this.requestGpuAnalysis();
-          else this.requestAnalysis();
-        }
-      } else {
-        this.render();
-      }
+      this.applyApproxAnalysis(res, performance.now() - t0, id);
     } catch {
       this.pendingAnalysis = false;
-      this.playSolverHeuristic();
+      this.requestCpuAnalysis();
     }
   }
 

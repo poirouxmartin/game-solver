@@ -384,29 +384,89 @@ export const buildAnalysis = (
   };
 };
 
-/** Analyse complète (CPU) : séquence de coups → scores par colonne. */
-export const analyzeRoot = (
-  seq: number[],
-  options: AnalyzeOptions = {},
-): GpuAnalysis => {
-  const opts: Required<AnalyzeOptions> = {
-    frontierDepth: options.frontierDepth ?? 6,
-    leafDepth: options.leafDepth ?? 4,
-    maxLeaves: options.maxLeaves ?? 100_000,
-  };
-  const root = new ConnectFourPosition();
-  for (const col of seq) root.play(col);
-  const remaining = CELLS - root.nbMoves();
-  clearLeafTt();
+const resolveOptions = (options: AnalyzeOptions): Required<AnalyzeOptions> => ({
+  frontierDepth: options.frontierDepth ?? 6,
+  leafDepth: options.leafDepth ?? 4,
+  maxLeaves: options.maxLeaves ?? 100_000,
+});
 
-  const nodes = expandFrontier(root, opts);
+const collectJobs = (
+  root: ConnectFourPosition,
+  nodes: FrontierNode[],
+  opts: Required<AnalyzeOptions>,
+): { jobs: LeafJob[]; remaining: number } => {
+  const remaining = CELLS - root.nbMoves();
   const jobs: LeafJob[] = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node.terminal || node.depth < opts.frontierDepth) continue;
     jobs.push({ nodeIndex: i, pos: node.pos, budget: Math.min(opts.leafDepth, remaining - node.depth) });
   }
+  return { jobs, remaining };
+};
+
+/** Analyse complète (CPU, référence JS) : séquence de coups → scores par colonne. */
+export const analyzeRoot = (
+  seq: number[],
+  options: AnalyzeOptions = {},
+): GpuAnalysis => {
+  const opts = resolveOptions(options);
+  const root = new ConnectFourPosition();
+  for (const col of seq) root.play(col);
+  clearLeafTt();
+
+  const nodes = expandFrontier(root, opts);
+  const { jobs, remaining } = collectJobs(root, nodes, opts);
   const leafValues = evaluateLeavesCpu(jobs);
+  return buildAnalysis(root, nodes, leafValues, remaining, opts);
+};
+
+// ---------- variante rapide : feuilles évaluées en WASM ----------
+
+import { loadWasmSolver, type WasmSolver } from '../wasm-solver';
+
+let leafWasm: WasmSolver | null = null;
+let leafWasmPromise: Promise<WasmSolver | null> | null = null;
+
+/** Instance WASM dédiée à l'évaluation de feuilles (TT inutilisée → logSize réduit). */
+export const getLeafWasm = (): Promise<WasmSolver | null> => {
+  if (!leafWasmPromise) {
+    leafWasmPromise = loadWasmSolver(14)
+      .then((s) => {
+        leafWasm = s;
+        return s;
+      })
+      .catch(() => null);
+  }
+  return leafWasmPromise;
+};
+
+/**
+ * Analyse complète avec feuilles évaluées en WASM (×3-5 vs JS), repli JS si
+ * l'instance ne charge pas. Mêmes valeurs que analyzeRoot.
+ */
+export const analyzeRootFast = async (
+  seq: number[],
+  options: AnalyzeOptions = {},
+): Promise<GpuAnalysis> => {
+  const opts = resolveOptions(options);
+  const root = new ConnectFourPosition();
+  for (const col of seq) root.play(col);
+  clearLeafTt();
+
+  const nodes = expandFrontier(root, opts);
+  const { jobs, remaining } = collectJobs(root, nodes, opts);
+  const wasm = await getLeafWasm();
+  const leafValues = new Map<number, number>();
+  if (wasm) {
+    for (const j of jobs) {
+      const p = j.pos;
+      wasm.setLeafPosition(p.currentLo, p.currentHi, p.maskLo, p.maskHi, p.nbMoves());
+      leafValues.set(j.nodeIndex, wasm.leafEval(j.budget));
+    }
+  } else {
+    for (const j of jobs) leafValues.set(j.nodeIndex, evaluateLeaf(j.pos, j.budget));
+  }
   return buildAnalysis(root, nodes, leafValues, remaining, opts);
 };
 
