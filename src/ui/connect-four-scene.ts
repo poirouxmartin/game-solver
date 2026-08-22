@@ -4,7 +4,7 @@ import { ConnectFourSolver } from '../games/connect-four/solver';
 import { SolverPool } from '../games/connect-four/solver.pool';
 import type { AnalyzeResponse } from '../games/connect-four/solver.worker';
 import { createGpuSolver, type GpuSolver } from '../games/connect-four/gpu/gpu-solver';
-import { analyzeRootFast, type GpuAnalysis } from '../games/connect-four/gpu/gpu-engine';
+import { analyzeRootFast, analyzeRootParallel, type GpuAnalysis } from '../games/connect-four/gpu/gpu-engine';
 
 const SCREEN_W = 480;
 const SCREEN_H = 680;
@@ -231,7 +231,7 @@ export class ConnectFourScene extends Phaser.Scene {
     }
   }
 
-  /** Analyse d'ouverture instantanée via le CPU (feuilles WASM, repli JS). */
+  /** Analyse d'ouverture instantanée via le CPU : feuilles réparties sur le pool. */
   private async requestCpuAnalysis(): Promise<void> {
     this.pendingAnalysis = true;
     this.analyzeMs = 0;
@@ -239,11 +239,22 @@ export class ConnectFourScene extends Phaser.Scene {
     const id = ++this.reqId;
     const t0 = performance.now();
     try {
-      const res = await analyzeRootFast(this.c4.history);
+      const res = await analyzeRootParallel(this.c4.history, (jobs) =>
+        this.worker.analyzeLeaves(jobs).then((values) => {
+          const map = new Map<number, number>();
+          for (let i = 0; i < jobs.length; i++) map.set(jobs[i].nodeIndex, values[i]);
+          return map;
+        }),
+      );
       this.applyApproxAnalysis(res, performance.now() - t0, id);
     } catch {
-      this.pendingAnalysis = false;
-      this.playSolverHeuristic();
+      try {
+        const res = await analyzeRootFast(this.c4.history);
+        this.applyApproxAnalysis(res, performance.now() - t0, id);
+      } catch {
+        this.pendingAnalysis = false;
+        this.playSolverHeuristic();
+      }
     }
   }
 

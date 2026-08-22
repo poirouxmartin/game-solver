@@ -442,11 +442,12 @@ export const getLeafWasm = (): Promise<WasmSolver | null> => {
 };
 
 /**
- * Analyse complète avec feuilles évaluées en WASM (×3-5 vs JS), repli JS si
- * l'instance ne charge pas. Mêmes valeurs que analyzeRoot.
+ * Analyse complète avec feuilles évaluées en parallèle via `evalBatch`
+ * (pool de workers). Repli local si le dispatch échoue.
  */
-export const analyzeRootFast = async (
+export const analyzeRootParallel = async (
   seq: number[],
+  evalBatch: (jobs: LeafJob[]) => Promise<Map<number, number>>,
   options: AnalyzeOptions = {},
 ): Promise<GpuAnalysis> => {
   const opts = resolveOptions(options);
@@ -456,19 +457,36 @@ export const analyzeRootFast = async (
 
   const nodes = expandFrontier(root, opts);
   const { jobs, remaining } = collectJobs(root, nodes, opts);
-  const wasm = await getLeafWasm();
-  const leafValues = new Map<number, number>();
-  if (wasm) {
-    for (const j of jobs) {
-      const p = j.pos;
-      wasm.setLeafPosition(p.currentLo, p.currentHi, p.maskLo, p.maskHi, p.nbMoves());
-      leafValues.set(j.nodeIndex, wasm.leafEval(j.budget));
-    }
-  } else {
-    for (const j of jobs) leafValues.set(j.nodeIndex, evaluateLeaf(j.pos, j.budget));
+  let leafValues: Map<number, number>;
+  try {
+    leafValues = await evalBatch(jobs);
+  } catch {
+    leafValues = evaluateLeavesCpu(jobs);
   }
   return buildAnalysis(root, nodes, leafValues, remaining, opts);
 };
+
+/** Évalue les jobs sur l'instance WASM locale (mono-cœur). */
+const evaluateLeavesWasmLocal = async (jobs: LeafJob[]): Promise<Map<number, number>> => {
+  const wasm = await getLeafWasm();
+  if (!wasm) return evaluateLeavesCpu(jobs);
+  const map = new Map<number, number>();
+  for (const j of jobs) {
+    const p = j.pos;
+    wasm.setLeafPosition(p.currentLo, p.currentHi, p.maskLo, p.maskHi, p.nbMoves());
+    map.set(j.nodeIndex, wasm.leafEval(j.budget));
+  }
+  return map;
+};
+
+/**
+ * Analyse complète avec feuilles évaluées en WASM (×3-5 vs JS), repli JS si
+ * l'instance ne charge pas. Mêmes valeurs que analyzeRoot.
+ */
+export const analyzeRootFast = async (
+  seq: number[],
+  options: AnalyzeOptions = {},
+): Promise<GpuAnalysis> => analyzeRootParallel(seq, evaluateLeavesWasmLocal, options);
 
 /** Constantes par défaut exportées pour la config du kernel WGSL. */
 export const DEFAULT_FRONTIER_DEPTH = 6;

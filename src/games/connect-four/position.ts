@@ -83,6 +83,33 @@ export class ConnectFourPosition {
     for (let i = 0; i < WIDTH; i++) this.height[i] = p.height[i];
   }
 
+  /**
+   * Positionne la position depuis les bitboards bruts ; les hauteurs sont
+   * recalculées par popcount du masque de chaque colonne.
+   */
+  setFromBits(cLo: number, cHi: number, mLo: number, mHi: number, mv: number): void {
+    this.currentLo = cLo;
+    this.currentHi = cHi;
+    this.maskLo = mLo;
+    this.maskHi = mHi;
+    this.moves = mv;
+    for (let col = 0; col < WIDTH; col++) {
+      let mLoC = mLo & COLUMN_MASK_LO[col];
+      const mHiC = mHi & COLUMN_MASK_HI[col];
+      let count = 0;
+      while (mLoC !== 0) {
+        mLoC &= mLoC - 1;
+        count++;
+      }
+      let x = mHiC;
+      while (x !== 0) {
+        x &= x - 1;
+        count++;
+      }
+      this.height[col] = count;
+    }
+  }
+
   nbMoves(): number {
     return this.moves;
   }

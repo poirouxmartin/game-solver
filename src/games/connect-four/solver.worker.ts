@@ -2,12 +2,18 @@ import { MIN_ANALYZE_MOVES } from './game-controller';
 import { ConnectFourPosition } from './position';
 import { ConnectFourSolver, SOLVE_STOP } from './solver';
 import { loadWasmSolver, WASM_STOP, type WasmSolver } from './wasm-solver';
+import { evaluateLeaf } from './gpu/gpu-engine';
 
 export interface AnalyzeRequest {
   id: number;
-  seq: number[];
+  /** Séquence de coups (analyse exacte). */
+  seq?: number[];
   /** Colonnes à analyser (défaut : toutes). */
   cols?: number[];
+  /** Feuilles à évaluer : [cLo,cHi,mLo,mHi,moves,budget] × N (étage GPU/CPU). */
+  leaves?: number[];
+  /** Index de partition (réponses feuilles multi-workers). */
+  part?: number;
 }
 
 export interface AnalyzeResponse {
@@ -17,6 +23,10 @@ export interface AnalyzeResponse {
   scores: number[] | null;
   ms: number;
   nodes: number;
+  /** Valeurs des feuilles (même ordre que la requête), si requête feuilles. */
+  values?: number[];
+  /** Index de partition (réponses feuilles multi-workers). */
+  part?: number;
 }
 
 export const TT_LOG_SIZE = 22;
@@ -25,6 +35,8 @@ const WIDTH = 7;
 
 export interface Engine {
   analyzeCols(seq: number[], cols: number[]): { scores: number[] | null; nodes: number };
+  /** Évalue des feuilles aplaties [cLo,cHi,mLo,mHi,moves,budget] × N. */
+  evalLeaves(flat: number[]): number[];
 }
 
 export class JsEngine implements Engine {
@@ -49,6 +61,16 @@ export class JsEngine implements Engine {
       return { scores: null, nodes: this.solver.nodeCount };
     }
   }
+
+  evalLeaves(flat: number[]): number[] {
+    const values: number[] = [];
+    const pos = new ConnectFourPosition();
+    for (let i = 0; i + 5 < flat.length; i += 6) {
+      pos.setFromBits(flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4]);
+      values.push(evaluateLeaf(pos, flat[i + 5]));
+    }
+    return values;
+  }
 }
 
 export class WasmEngine implements Engine {
@@ -70,6 +92,15 @@ export class WasmEngine implements Engine {
     }
     return { scores, nodes: this.solver.getNodeCount() };
   }
+
+  evalLeaves(flat: number[]): number[] {
+    const values: number[] = [];
+    for (let i = 0; i + 5 < flat.length; i += 6) {
+      this.solver.setLeafPosition(flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4]);
+      values.push(this.solver.leafEval(flat[i + 5]));
+    }
+    return values;
+  }
 }
 
 export async function createEngine(nodeLimit = NODE_LIMIT): Promise<Engine> {
@@ -88,10 +119,16 @@ const ctx = typeof self !== 'undefined' ? (self as unknown as Worker) : null;
 
 if (ctx) {
   ctx.onmessage = async (e: MessageEvent<AnalyzeRequest>) => {
-    const { id, seq, cols } = e.data;
+    const { id, seq, cols, leaves, part } = e.data;
     const engine = await enginePromise;
+    if (leaves !== undefined) {
+      const t0 = performance.now();
+      const values = engine.evalLeaves(leaves);
+      ctx.postMessage({ id, cols: [], scores: null, ms: performance.now() - t0, nodes: 0, values, part } satisfies AnalyzeResponse);
+      return;
+    }
     const pos = new ConnectFourPosition();
-    for (const col of seq) pos.play(col);
+    for (const col of seq ?? []) pos.play(col);
     let scores: number[] | null = null;
     let ms = 0;
     let nodes = 0;
@@ -99,7 +136,7 @@ if (ctx) {
     if (pos.nbMoves() >= MIN_ANALYZE_MOVES) {
       wanted = cols ?? Array.from({ length: WIDTH }, (_, col) => col);
       const t0 = performance.now();
-      const result = engine.analyzeCols(seq, wanted);
+      const result = engine.analyzeCols(seq ?? [], wanted);
       ms = performance.now() - t0;
       scores = result.scores;
       nodes = result.nodes;

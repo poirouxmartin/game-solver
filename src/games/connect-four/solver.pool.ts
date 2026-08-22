@@ -1,4 +1,5 @@
 import type { AnalyzeRequest, AnalyzeResponse } from './solver.worker';
+import type { ConnectFourPosition } from './position';
 
 const WIDTH = 7;
 const ROWS = 6;
@@ -25,6 +26,21 @@ interface PendingRequest {
   scores: (number | null)[];
 }
 
+interface LeafPending {
+  parts: number[][];
+  outstanding: number;
+  resolve: (values: number[]) => void;
+}
+
+/**
+ * Feuille à évaluer par l'étage approximatif (bitboards + budget).
+ * Structurellement compatible avec LeafJob de gpu/gpu-engine.
+ */
+export interface PoolLeafJob {
+  pos: ConnectFourPosition;
+  budget: number;
+}
+
 /**
  * Pool de workers WASM : analyse des 7 colonnes répartie sur plusieurs cœurs.
  * Expose la même interface (onmessage/postMessage/terminate) qu'un Worker unique.
@@ -33,7 +49,9 @@ export class SolverPool {
   onmessage: ((e: MessageEvent<AnalyzeResponse>) => void) | null = null;
   private readonly workers: Worker[];
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly leafPending = new Map<number, LeafPending>();
   private lastId = 0;
+  private leafSeq = 0;
 
   constructor(numWorkers = 4) {
     const n = Math.min(Math.max(1, numWorkers), WIDTH);
@@ -46,7 +64,7 @@ export class SolverPool {
   }
 
   postMessage(req: AnalyzeRequest): void {
-    const batches = distributeCols(this.workers.length, playableCols(req.seq));
+    const batches = distributeCols(this.workers.length, playableCols(req.seq ?? []));
     const pending: PendingRequest = {
       outstanding: batches.filter((b) => b.length > 0).length,
       totalNodes: 0,
@@ -67,13 +85,77 @@ export class SolverPool {
     }
   }
 
+  /**
+   * Évalue des feuilles en parallèle sur les workers (étage approximatif).
+   * Résolu avec les valeurs dans l'ordre des jobs. Ids négatifs : jamais en
+   * collision avec les ids d'analyse exacte du scène.
+   */
+  analyzeLeaves(jobs: PoolLeafJob[]): Promise<number[]> {
+    return new Promise((resolve, reject) => {
+      if (this.workers.length === 0) {
+        reject(new Error('pool terminé'));
+        return;
+      }
+      const id = -(++this.leafSeq);
+      const n = this.workers.length;
+      const chunks: number[][] = Array.from({ length: n }, () => []);
+      for (let i = 0; i < jobs.length; i++) {
+        const j = jobs[i];
+        const p = j.pos;
+        chunks[i % n].push(
+          p.currentLo,
+          p.currentHi,
+          p.maskLo,
+          p.maskHi,
+          p.nbMoves(),
+          j.budget,
+        );
+      }
+      let outstanding = 0;
+      for (const c of chunks) if (c.length > 0) outstanding++;
+      this.leafPending.set(id, { parts: new Array(n), outstanding, resolve });
+      for (let w = 0; w < n; w++) {
+        if (chunks[w].length > 0) {
+          this.workers[w].postMessage({ id, leaves: chunks[w], part: w } satisfies AnalyzeRequest & { part: number });
+        }
+      }
+      if (outstanding === 0) {
+        this.leafPending.delete(id);
+        resolve([]);
+      }
+    });
+  }
+
   terminate(): void {
     this.pending.clear();
+    this.leafPending.clear();
     for (const w of this.workers) w.terminate();
     this.workers.length = 0;
   }
 
   private onWorkerResponse(data: AnalyzeResponse): void {
+    const leaf = this.leafPending.get(data.id);
+    if (leaf) {
+      leaf.parts[data.part ?? 0] = data.values ?? [];
+      if (--leaf.outstanding <= 0) {
+        this.leafPending.delete(data.id);
+        const n = leaf.parts.length;
+        const out: number[] = [];
+        for (let t = 0; ; t++) {
+          let any = false;
+          for (let w = 0; w < n; w++) {
+            const v = leaf.parts[w]?.[t];
+            if (v !== undefined) {
+              out.push(v);
+              any = true;
+            }
+          }
+          if (!any) break;
+        }
+        leaf.resolve(out);
+      }
+      return;
+    }
     const pending = this.pending.get(data.id);
     if (!pending) return;
     pending.outstanding--;
