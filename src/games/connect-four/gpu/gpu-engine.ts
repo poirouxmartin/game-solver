@@ -1,6 +1,6 @@
 import { ConnectFourPosition } from '../position';
 import { COLUMN_ORDER } from '../solver';
-import { computeWinningPosition, HEIGHT, WIDTH, xor } from '../bitboard';
+import { computeWinningPosition, HEIGHT, WIDTH } from '../bitboard';
 
 /**
  * Moteur GPU d'analyse approchée : expansion de frontière (BFS dédupliqué par
@@ -157,25 +157,6 @@ export const evaluateLeaf = (pos: ConnectFourPosition, depth: number): number =>
   return leafSearch(pos, depth);
 };
 
-/** Heuristique de feuille (utilisée seulement si le budget s'épuise avant le terminal). */
-export const heuristic = (pos: ConnectFourPosition): number => {
-  if (pos.canWinNext()) return WIN_SCORE;
-  pos.possibleNonLosingMovesInto();
-  if (pos.lo === 0 && pos.hi === 0) return -WIN_SCORE;
-  const opp = xor(pos.currentLo, pos.currentHi, pos.maskLo, pos.maskHi);
-  const oppWin = computeWinningPosition(opp.lo, opp.hi, pos.maskLo, pos.maskHi);
-  const p = pos.possible();
-  let threats = 0;
-  let oppThreats = 0;
-  for (let col = 0; col < WIDTH; col++) {
-    if (!pos.canPlay(col)) continue;
-    const inOppWin = (oppWin.lo & p.lo & colMaskLo(col)) !== 0 || (oppWin.hi & p.hi & colMaskHi(col)) !== 0;
-    if (inOppWin) oppThreats++;
-    if (pos.isWinningMove(col)) threats++;
-  }
-  return threats - oppThreats;
-};
-
 const colMaskLo = (col: number): number => {
   let lo = 0;
   const cell = col * (HEIGHT + 1);
@@ -196,6 +177,52 @@ const colMaskHi = (col: number): number => {
   return hi;
 };
 
+/** Masques par colonne précalculés (chemin chaud). */
+const COL_MASK_LO: readonly number[] = Array.from({ length: WIDTH }, (_, c) => colMaskLo(c));
+const COL_MASK_HI: readonly number[] = Array.from({ length: WIDTH }, (_, c) => colMaskHi(c));
+
+/**
+ * Heuristique de feuille (utilisée seulement si le budget s'épuise avant le
+ * terminal). Mêmes valeurs que la version naïve, mais possible/winning/oppWin
+ * ne sont calculés qu'une fois.
+ */
+export const heuristic = (pos: ConnectFourPosition): number => {
+  const p = pos.possible();
+  const w = computeWinningPosition(pos.currentLo, pos.currentHi, pos.maskLo, pos.maskHi);
+  if ((w.lo & p.lo) !== 0 || (w.hi & p.hi) !== 0) return WIN_SCORE;
+  pos.possibleNonLosingMovesInto();
+  if (pos.lo === 0 && pos.hi === 0) return -WIN_SCORE;
+  const ol = (pos.currentLo ^ pos.maskLo) >>> 0;
+  const oh = pos.currentHi ^ pos.maskHi;
+  const ow = computeWinningPosition(ol, oh, pos.maskLo, pos.maskHi);
+  let threats = 0;
+  let oppThreats = 0;
+  for (let col = 0; col < WIDTH; col++) {
+    if (!pos.canPlay(col)) continue;
+    const mLo = COL_MASK_LO[col];
+    const mHi = COL_MASK_HI[col];
+    if (((ow.lo & p.lo & mLo) !== 0) || ((ow.hi & p.hi & mHi) !== 0)) oppThreats++;
+    if (((w.lo & p.lo & mLo) !== 0) || ((w.hi & p.hi & mHi) !== 0)) threats++;
+  }
+  return threats - oppThreats;
+};
+
+/**
+ * Table de transposition partagée entre toutes les feuilles d'une analyse
+ * (les sous-arbres se recouvrent fortement). Entrée packée :
+ * depth(6b) << 13 | flag(2b) << 11 | (valeur + 1024) sur 11 bits.
+ * Valeurs identiques au minimax pur : la parité avec le kernel est conservée.
+ */
+const TT_EXACT = 0;
+const TT_LOWER = 1;
+const TT_UPPER = 2;
+let leafTt = new Map<number, number>();
+
+/** Réinitialise la table de transposition des feuilles. */
+export const clearLeafTt = (): void => {
+  leafTt.clear();
+};
+
 const negamaxLike = (pos: ConnectFourPosition, depth: number, alpha = -Infinity, beta = Infinity): number => {
   pos.possibleNonLosingMovesInto();
   const possibleLo = pos.lo;
@@ -203,18 +230,42 @@ const negamaxLike = (pos: ConnectFourPosition, depth: number, alpha = -Infinity,
   if (possibleLo === 0 && possibleHi === 0) return -Math.floor((CELLS - pos.nbMoves()) / 2);
   if (pos.nbMoves() >= DRAW_MOVES) return 0;
   if (depth <= 0) return heuristic(pos);
+  const key = canonicalKey(pos);
+  let a = alpha;
+  let b = beta;
+  const entry = leafTt.get(key);
+  if (entry !== undefined && (entry >>> 13) >= depth) {
+    const tv = (entry & 2047) - 1024;
+    const flag = (entry >>> 11) & 3;
+    if (flag === TT_EXACT) return tv;
+    if (flag === TT_LOWER) {
+      if (tv > a) a = tv;
+    } else if (tv < b) b = tv;
+    if (a >= b) return tv;
+  }
   let best = -Infinity;
   for (const col of COLUMN_ORDER) {
     if (!pos.canPlay(col)) continue;
     if (!pos.isInMask(col, possibleLo, possibleHi)) continue;
     pos.play(col);
-    const v = -negamaxLike(pos, depth - 1, -beta, -alpha);
+    let v: number;
+    if (best === -Infinity) {
+      v = -negamaxLike(pos, depth - 1, -b, -a);
+    } else {
+      v = -negamaxLike(pos, depth - 1, -a - 1, -a);
+      if (v > a && v < b) v = -negamaxLike(pos, depth - 1, -b, -v);
+    }
     pos.unplay(col);
     if (v > best) best = v;
-    if (v > alpha) alpha = v;
-    if (alpha >= beta) break;
+    if (v > a) a = v;
+    if (a >= b) break;
   }
-  return best === -Infinity ? heuristic(pos) : best;
+  if (best === -Infinity) return heuristic(pos);
+  const flag = best <= alpha ? TT_UPPER : best >= beta ? TT_LOWER : TT_EXACT;
+  if (leafTt.size < 4_000_000) {
+    leafTt.set(key, ((depth & 63) << 13) | (flag << 11) | (best + 1024));
+  }
+  return best;
 };
 
 const leafSearch = (pos: ConnectFourPosition, depth: number): number => {
@@ -346,6 +397,7 @@ export const analyzeRoot = (
   const root = new ConnectFourPosition();
   for (const col of seq) root.play(col);
   const remaining = CELLS - root.nbMoves();
+  clearLeafTt();
 
   const nodes = expandFrontier(root, opts);
   const jobs: LeafJob[] = [];
