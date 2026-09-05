@@ -40,6 +40,12 @@ const slotXY = (col: number, row: number): { x: number; y: number } => ({
 const outcomeLabel = (o: C4Outcome): string => (o === 'win' ? 'gagne' : o === 'draw' ? 'nulle' : 'perd');
 
 export class ConnectFourScene extends Phaser.Scene {
+  constructor() {
+    // Sans cle explicite, Phaser nomme les deux scenes `default` : la seconde
+    // refuse de s'enregistrer, et le routage par cle ne trouve jamais rien.
+    super('ConnectFourScene');
+  }
+
   private readonly c4 = new ConnectFourGame(new ConnectFourSolver(10));
   private worker!: SolverPool;
   private gpuSolver: GpuSolver | null = null;

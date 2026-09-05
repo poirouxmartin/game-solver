@@ -37,6 +37,12 @@ const TEXT_STYLE = (size: number, color = '#e2e8f0'): Phaser.Types.GameObjects.T
 });
 
 export class TicTacToeScene extends Phaser.Scene {
+  constructor() {
+    // Sans cle explicite, Phaser nomme les deux scenes `default` : la seconde
+    // refuse de s'enregistrer, et le routage par cle ne trouve jamais rien.
+    super('TicTacToeScene');
+  }
+
   private readonly solver = new NegamaxSolver(ticTacToeGame);
   private state: TicTacToeState = EMPTY_STATE;
   private gameOver = false;
