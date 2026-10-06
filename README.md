@@ -4,7 +4,7 @@ Solvers for two-player, zero-sum, perfect-information games. An engine looks for
 a given time; a solver returns the exact value of a position, assuming nobody makes another
 mistake, and only answers once it has proved it.
 
-Project page: [martinpoiroux.com/en/projects/game-solver](https://martinpoiroux.com/en/projects/game-solver/)
+Project page: [martinpoiroux.com/projets/game-solver/](https://martinpoiroux.com/projets/game-solver/)
 
 ## Games
 
