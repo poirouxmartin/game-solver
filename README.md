@@ -1,34 +1,41 @@
 # game-solver
 
-Solveurs de jeux à information parfaite et somme nulle, prouvés solvables (Puissance 4, et autres).
+Solvers for two-player, zero-sum, perfect-information games. An engine looks for a good move in
+a given time; a solver returns the exact value of a position, assuming nobody makes another
+mistake, and only answers once it has proved it.
 
-## Objectif
+Project page: [martinpoiroux.com/en/projects/game-solver](https://martinpoiroux.com/en/projects/game-solver/)
 
-- Implémenter un solveur (retrograde / minimax avec alpha-bêta, mémorisation) pour plusieurs jeux solvables.
-- Une UI par jeu (Phaser / PixiJS).
-- Un moteur d'analyse qui étiquette chaque coup possible : `Gagne`, `Perd`, `Nulle`.
+## Games
 
-## Structure
+- **Tic-tac-toe**: solved in a handful of nodes.
+- **Connect 4**: the real target. Every playable column is labelled **W** (win), **D** (draw)
+  or **L** (loss) for the side to move.
 
-| Dossier | Description |
-|---------|-------------|
-| `src/games/<game>/` | Règles + évaluation du jeu |
-| `src/solvers/` | Algorithmes de résolution génériques |
-| `src/analysis/` | Moteur d'analyse (nature de chaque possibilité) |
-| `src/ui/<game>/` | UI d'un jeu |
+## How it works
 
-## Exécution
+- Memoised negamax alpha-beta on a bitboard (`src/core/`, `src/games/connect-four/`).
+- The hot loop is written in AssemblyScript and compiled to WebAssembly
+  (`solver.as.ts` -> `solver-as.wasm`), with a plain TypeScript fallback.
+- Analysis runs in a pool of Web Workers, one per core and one column each, so the UI stays
+  responsive. Budget: 8 M nodes per worker.
+- An experimental WebGPU path (`gpu/`), used by the Connect 4 view when a GPU adapter is available.
+- The empty Connect 4 position costs about ten minutes to solve, so per-move analysis starts at
+  move 7; before that the solver plays a safe heuristic (centre first, never enter a losing line).
 
-- `npm run dev` — serveur de dev, puis ouvrir http://localhost:5173.
-- Navigation par hash : `#/tic-tac-toe` (défaut), `#/connect-four`.
-- `npm run test` — tests Vitest (fixtures connect-four validées contre le solveur en ligne de Pascal Pons).
-- `npm run typecheck` / `npm run build` (compile aussi le WASM).
-- `npm run build:wasm` — recompile `solver.as.ts` (AssemblyScript) → `solver-as.wasm` + `solver-as.wasm.ts` (octets embarqués).
+Correctness is not judged by eye: test positions are checked against Pascal Pons' reference
+solver.
 
-## Tester Puissance 4
+## Run
 
-- Joueur humain = **Rouge** (premier joueur), solveur = **Jaune**.
-- L'analyse par coup (badges **G** gagne / **N** nulle / **P** perd sur chaque colonne) démarre à partir de 7 coups joués (l'analyse de la position vide coûte ~10 minutes). Le bouton **Analyse** ON/OFF la masque ou la relance.
-- L'analyse tourne dans un **pool de Web Workers** (un par cœur, WASM) : les 7 colonnes sont réparties en parallèle, l'interface reste fluide pendant le calcul (budget 8 M de nœuds par worker, repli JS si le WASM est indisponible).
-- Avant 7 coups, le solveur joue l'heuristique sûre `possibleNonLosingMoves` + ordre central.
-- Bouton **Nouvelle partie** pour relancer une partie.
+```bash
+npm install
+npm run dev          # http://localhost:5173, #/tic-tac-toe or #/connect-four
+npm test             # Vitest
+npm run typecheck
+npm run build        # also compiles the WASM module
+```
+
+## License
+
+MIT
